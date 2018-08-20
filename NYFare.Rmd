@@ -10,6 +10,7 @@ library(readr)
 library(geosphere)
 library(caret)
 library(lubridate)
+library(randomForest)
 ```
 
 
@@ -19,49 +20,15 @@ train=read_csv('datasets/train.csv')
 test=read_csv('datasets/test.csv',col_types = list(key=col_character()))
 ```
 
-
-### Randomly select 50k rows from the train dataset 
-### Remove outliers
-### Remove NAs
+Feature Engineering
 ```{r}
-train_1=train[sample(1:nrow(train),50000,FALSE,NULL),] %>% 
-  
-  rowwise() %>% 
-  
-  #drop rows if any column has NA's
-  na.omit() %>% 
-  
-  
-  #remove wrong latitude and longitude
-  filter (pickup_longitude > -80 & pickup_longitude < -60) %>%
-  
-  filter(pickup_latitude>30 & pickup_latitude<50) %>%
-  
-  filter(dropoff_longitude  > -80 & dropoff_longitude < -60) %>%
-  
-  filter(dropoff_latitude > 30 & dropoff_latitude < 50) %>%
-  
-  #remove negative fare amounts
-  filter(fare_amount > 0) %>% 
-  
-  #remove passenger count =0
-  filter(passenger_count>0)
-  
-```
+jfk_coord = c(40.639722, -73.778889)
+ewr_coord = c(40.6925, -74.168611)
+lga_coord = c(40.77725, -73.872611)
 
-
-
-```{r}
-table(train_1$passenger_count)
-```
-
-
-
-
-### Adding the new features / converting as date data type
-
-```{r}
-train_2=train_1 %>% 
+feature_engineer=function(df)
+{
+df=df %>% 
   
   rowwise() %>% 
   
@@ -72,72 +39,96 @@ train_2=train_1 %>%
   
   mutate(pickup_datetime_est=with_tz(pickup_datetime, tzone = "America/New_York"))  %>% 
   
+  mutate(pickup_year=year(pickup_datetime_est)) %>% 
   
+  mutate(pickup_month=as.factor(month(pickup_datetime_est))) %>% 
   
-  
-    # casting as pickup date time
-  mutate(dropoff_datetime=substring(dropoff_datetime,1,nchar(dropoff_datetime)-4)) %>% 
-  
-  mutate(dropoff_datetime=ymd_hms(dropoff_datetime,tz="UTC")) %>% 
-  
-  mutate(dropoff_datetime_est=with_tz(dropoff_datetime, tzone = "America/New_York"))  %>% 
-  
-  
-  #trip duration
-  mutate(trip_duration)
-  
-  
+  mutate(pickup_day=as.factor(day(pickup_datetime_est))) %>% 
   # adding week day
   mutate(wday=wday(pickup_datetime_est,label=TRUE)) %>% 
   
   # adding pickup hour
-  mutate(pickup_hour_est=as.factor(hour(pickup_datetime_est))) %>% 
+  mutate(pickup_hour_est=hour(pickup_datetime_est)) %>% 
   
   
   # Adding haversine distance
-  mutate(dist_haversine=distHaversine(c(pickup_latitude,pickup_longitude),c(dropoff_latitude,dropoff_longitude
-                                                                            ))*0.000621371) 
+  mutate(dist_haversine=distHaversine(c(pickup_latitude,pickup_longitude),c(dropoff_latitude,dropoff_longitude))*0.000621371) %>% 
+  
 
-test1=test %>%   
-  rowwise() %>% 
-  mutate(pickup_datetime=substring(pickup_datetime,1,nchar(pickup_datetime)-4)) %>% 
-  mutate(pickup_datetime=ymd_hms(pickup_datetime,tz="UTC")) %>% 
-  mutate(pickup_datetime_est=with_tz(pickup_datetime, tzone = "America/New_York"))  %>% 
-  mutate(wday=wday(pickup_datetime_est,label=TRUE)) %>%
-  mutate(pickup_hour_est=as.factor(hour(pickup_datetime_est))) %>% 
-  mutate(dist_haversine=distHaversine(c(pickup_latitude,pickup_longitude),c(dropoff_latitude,dropoff_longitude))*0.000621371)
+  mutate(jfk_haversine=min(distHaversine(jfk_coord,c(pickup_latitude,pickup_longitude)),distHaversine(jfk_coord,c(dropoff_latitude,dropoff_longitude)))) %>% 
+
+  mutate(ewr_haversine=min(distHaversine(ewr_coord,c(pickup_latitude,pickup_longitude)),distHaversine(ewr_coord,c(dropoff_latitude,dropoff_longitude)))) %>% 
+  
+  mutate(lga_haversine=min(distHaversine(lga_coord,c(pickup_latitude,pickup_longitude)),distHaversine(lga_coord,c(dropoff_latitude,dropoff_longitude))))
+  
+}
 ```
 
 
-#Removing the outliers and adding the haversine distance (converted to miles) save it as train_1
+### Randomly select 50k rows from the train dataset 
+### Remove outliers
+### Remove NAs
 ```{r}
-train_2=train_1 %>%
+train_1=train[sample(1:nrow(train),2000000,FALSE,NULL),] %>% 
+  
+  rowwise() %>% 
   
   #drop rows if any column has NA's
-  drop_na() %>% 
+  na.omit() %>% 
   
-  filter (pickup_longitude > -80 & pickup_longitude < -60) %>%
   
-  filter(pickup_latitude>30 & pickup_latitude<50) %>%
+  #remove wrong latitude and longitude
+  filter (pickup_longitude > -80 & pickup_longitude < -70) %>%
   
-  filter(dropoff_longitude  > -80 & dropoff_longitude < -60) %>%
+  filter(pickup_latitude>35 & pickup_latitude<45) %>%
   
-  filter(dropoff_latitude > 30 & dropoff_latitude < 50) %>%
+  filter(dropoff_longitude  > -80 & dropoff_longitude < -70) %>%
   
-  filter(fare_amount > 0) %>% 
+  filter(dropoff_latitude > 35 & dropoff_latitude < 45) %>%
   
-  rowwise() %>%
+  #remove  fare amounts less than minimun fare amount
+  filter(fare_amount > 2.5 ) %>% 
   
-  mutate(dist_haversine=distHaversine(c(pickup_latitude,pickup_longitude),c(dropoff_latitude,dropoff_longitude
-                                                                            ))*0.000621371)
+  #remove passenger count between 0 and 10 resonable range
+  filter(passenger_count>0 & passenger_count <=10)
+  
 ```
 
+
+
+```{r}
+summary(train_1)
+```
+
+
+
+
+
+### Adding the new features / converting as date data type
+
+```{r}
+train_2=feature_engineer(train_1) %>% mutate(dist_haversine=ifelse(dist_haversine==0,(fare_amount-2.5)/1.56,dist_haversine)) 
+
+
+test1=feature_engineer(test)
+
+```
+
+
+```{r}
+train_2 =train_2 %>% filter(dist_haversine<=60)
+```
+
+
+```{r}
+summary(train_2)
+```
 
 
 
 # select only required columns
 ```{r}
-train_3=train_2 %>% select(fare_amount,dist_haversine,wday,pickup_hour_est)
+train_3=train_2 %>% select(fare_amount,dist_haversine,wday,pickup_hour_est,pickup_year,pickup_month,pickup_day,passenger_count,jfk_haversine,ewr_haversine,lga_haversine)
 ```
 # creating train and test dataset
 ```{r}
@@ -145,6 +136,9 @@ index=createDataPartition(train_3$fare_amount,p=0.8,list=FALSE)
 train_data=train_3[index,]
 test_data=train_3[-index,]
 ```
+
+
+
 #training the model - lm
 ```{r}
 lm_model=train(fare_amount~.,data=train_data,method='lm')
@@ -162,18 +156,52 @@ sqrt(mean((predict(lm_model,test_data)-test_data$fare_amount)^2))
 
 
 
+
+
 #training the model - xgb
 ```{r}
-lm_model=train(fare_amount~.,data=train_data,method='xgbTree')
+xgb_model=train(fare_amount~.,data=train_data,method='xgbTree')
 ```
 
 Trainign set error
 ```{r}
-sqrt(mean((predict(lm_model,train_data)-train_data$fare_amount)^2))
+sqrt(mean((predict(xgb_model,train_data)-train_data$fare_amount)^2))
 ```
 Test set error
 ```{r}
-sqrt(mean((predict(lm_model,test_data)-test_data$fare_amount)^2))
+sqrt(mean((predict(xgb_model,test_data)-test_data$fare_amount)^2))
+```
+
+
+
+#training the model - random forest/ ranger
+```{r}
+
+rf_model=train(fare_amount~.,data=train_data,method='rf',ntree=5)
+```
+
+Trainign set error
+```{r}
+sqrt(mean((predict(rf_model,train_data)-train_data$fare_amount)^2))
+```
+Test set error
+```{r}
+sqrt(mean((predict(rf_model,test_data)-test_data$fare_amount)^2))
+```
+
+
+#training the model - random forest
+```{r}
+rf_model=randomForest(fare_amount~.,data=train_data,ntree=50,mtry=7)
+```
+
+Trainign set error
+```{r}
+sqrt(mean((predict(rf_model,train_data)-train_data$fare_amount)^2))
+```
+Test set error
+```{r}
+sqrt(mean((predict(rf_model,test_data)-test_data$fare_amount)^2))
 ```
 
 
@@ -184,18 +212,22 @@ sqrt(mean((predict(lm_model,test_data)-test_data$fare_amount)^2))
 
 
 
-# below coe to write make prediction and write to csv file
+# below code to write make prediction and write to csv file
 
 
 # selecting only required column in test 
 ```{r}
-test_1=test1 %>% select(dist_haversine,wday,pickup_hour_est)
+test_1=test1 %>% select(dist_haversine,wday,pickup_hour_est,pickup_year,pickup_month,pickup_day,passenger_count,jfk_haversine,ewr_haversine,lga_haversine)
 ```
+
+
 ```{r}
-prediction=predict(lm_model,test_1)
+prediction=predict(rf_model,test_1)
 ```
+
+
 writing to csv file for submission
 ```{r}
 submission=data.frame(key=as.character(test$key),fare_amount=prediction)
-write.csv(submission,file='submissions.csv',row.names=FALSE)
+write.csv(submission,file='rf_submissions.csv',row.names=FALSE)
 ```
